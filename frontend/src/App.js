@@ -1,8 +1,7 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 // FIX: Changed the import to use a CDN-hosted ES module version of ethers.js 
 // to resolve the dependency issue in the browser environment.
-import axios from "https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js";
-
+import axios from "axios";
 
 // --- ABIs & ADDRESSES (Replace with your actual deployed addresses) ---
 // --- IMPORTANT: Update these with the ABIs from the NEWLY compiled contracts ---
