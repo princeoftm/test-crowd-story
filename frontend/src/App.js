@@ -1,7 +1,9 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
-// FIX: Changed the import to use a CDN-hosted ES module version of ethers.js
+// FIX: Changed the import to use a CDN-hosted ES module version of ethers.js 
 // to resolve the dependency issue in the browser environment.
-import axios from 'axios';
+import axios from "https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js";
+
+
 // --- ABIs & ADDRESSES (Replace with your actual deployed addresses) ---
 // --- IMPORTANT: Update these with the ABIs from the NEWLY compiled contracts ---
 
@@ -259,7 +261,6 @@ const CROWDFUND_ABI = [
   }
 ];
 
-
 // --- Context for Web3 ---
 const Web3Context = createContext();
 
@@ -269,6 +270,27 @@ const Web3Provider = ({ children }) => {
     const [signer, setSigner] = useState(null);
     const [factoryContract, setFactoryContract] = useState(null);
     const [error, setError] = useState(null);
+    // NEW: State to hold the axios instance once it's loaded
+    const [axiosInstance, setAxiosInstance] = useState(null);
+
+    // NEW: useEffect to wait for the axios CDN script to load
+    useEffect(() => {
+        // Check if axios is already there
+        if (window.axios) {
+            setAxiosInstance(() => window.axios);
+        } else {
+            // If not, wait for it
+            const interval = setInterval(() => {
+                if (window.axios) {
+                    setAxiosInstance(() => window.axios);
+                    clearInterval(interval);
+                }
+            }, 100); // Check every 100ms
+            
+            // Cleanup on component unmount
+            return () => clearInterval(interval);
+        }
+    }, []);
 
     const connectWallet = async () => {
         setError(null);
@@ -277,7 +299,7 @@ const Web3Provider = ({ children }) => {
                 const web3Provider = new ethers.BrowserProvider(window.ethereum);
                 const accounts = await web3Provider.send("eth_requestAccounts", []);
                 const web3Signer = await web3Provider.getSigner();
-
+                
                 setProvider(web3Provider);
                 setSigner(web3Signer);
                 setAccount(accounts[0]);
@@ -293,7 +315,7 @@ const Web3Provider = ({ children }) => {
             setError("MetaMask is not installed. Please install it to use this dApp.");
         }
     };
-
+    
     useEffect(() => {
         if(window.ethereum) {
             window.ethereum.on('accountsChanged', (accounts) => {
@@ -307,15 +329,17 @@ const Web3Provider = ({ children }) => {
         }
     }, []);
 
-    const value = { account, provider, signer, factoryContract, connectWallet, error };
+    // MODIFIED: Add axiosInstance to the context value
+    const value = { account, provider, signer, factoryContract, connectWallet, error, axiosInstance };
 
-    return <Web3Context.Provider value={value}>{children}</Web3Context.Provider>;
+    // We only render the children once axios is ready to prevent errors
+    return <Web3Context.Provider value={value}>{axiosInstance && children}</Web3Context.Provider>;
 };
 
 export const useWeb3 = () => useContext(Web3Context);
 
 
-// --- Helper Components (UI Revamped) ---
+// --- Helper Components ---
 
 const Spinner = ({ text }) => (
     <div className="flex flex-col items-center justify-center space-x-2">
@@ -373,10 +397,10 @@ const Message = ({ text, type = 'error' }) => {
 };
 
 
-// --- Core Components (UI Revamped) ---
+// --- Core Components ---
 
 const CreateCampaignForm = ({ onCampaignCreated }) => {
-    const { factoryContract } = useWeb3();
+    const { factoryContract, axiosInstance } = useWeb3();
     const [title, setTitle] = useState('');
     const [goal, setGoal] = useState('');
     const [duration, setDuration] = useState('');
@@ -385,22 +409,24 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
     const [loadingMessage, setLoadingMessage] = useState('');
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
-
+    
     const uploadToIPFS = async (file) => {
         if (!file) return null;
         if (!PINATA_JWT || PINATA_JWT === "YOUR_PINATA_JWT") {
             throw new Error("Pinata API Key (JWT) is not configured.");
         }
-
+        
         const formData = new FormData();
         formData.append('file', file);
+
         const metadata = JSON.stringify({ name: file.name });
         formData.append('pinataMetadata', metadata);
+        
         const options = JSON.stringify({ cidVersion: 0 });
         formData.append('pinataOptions', options);
 
         try {
-            const res = await window.axios.post("https://api.pinata.cloud/pinning/pinFileToIPFS", formData, {
+            const res = await axiosInstance.post("https://api.pinata.cloud/pinning/pinFileToIPFS", formData, {
                 maxBodyLength: "Infinity",
                 headers: {
                     'Content-Type': `multipart/form-data; boundary=${formData._boundary}`,
@@ -416,11 +442,18 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
 
     const uploadMetadataToIPFS = async (imageCID, title) => {
         if (!imageCID || !title) return null;
-        const metadata = { name: title, description: "A StoryFund campaign.", image: `ipfs://${imageCID}` };
+
+        const metadata = {
+            name: title,
+            description: "An NFT representing a successfully funded StoryFund campaign.",
+            image: `ipfs://${imageCID}`
+        };
 
         try {
-            const res = await window.axios.post("https://api.pinata.cloud/pinning/pinJSONToIPFS", metadata, {
-                headers: { 'Authorization': `Bearer ${PINATA_JWT}` }
+            const res = await axiosInstance.post("https://api.pinata.cloud/pinning/pinJSONToIPFS", metadata, {
+                headers: {
+                    'Authorization': `Bearer ${PINATA_JWT}`
+                }
             });
             return res.data.IpfsHash;
         } catch (error) {
@@ -435,8 +468,14 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
         setError('');
         setSuccess('');
 
-        if (!factoryContract) { setError("Wallet not connected or contract not loaded."); return; }
-        if (!title || !goal || !duration || !imageFile) { setError("Please fill out all fields and select an image."); return; }
+        if (!factoryContract) {
+            setError("Wallet not connected or contract not loaded.");
+            return;
+        }
+        if (!title || !goal || !duration || !imageFile) {
+            setError("Please fill out all fields, including the image.");
+            return;
+        }
 
         setIsLoading(true);
         try {
@@ -446,7 +485,7 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
             setLoadingMessage('Uploading metadata...');
             const metadataCID = await uploadMetadataToIPFS(imageCID, title);
             const metadataURI = `ipfs://${metadataCID}`;
-
+            
             setLoadingMessage('Confirm in wallet...');
             const goalInWei = ethers.parseEther(goal);
             const durationInSeconds = parseInt(duration) * 24 * 60 * 60;
@@ -456,10 +495,14 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
             await tx.wait();
 
             setSuccess("Campaign created successfully!");
-            setTitle(''); setGoal(''); setDuration(''); setImageFile(null);
-            document.getElementById('image-upload').value = null;
-            if (onCampaignCreated) onCampaignCreated();
-
+            setTitle('');
+            setGoal('');
+            setDuration('');
+            setImageFile(null);
+            document.getElementById('image-upload').value = null; 
+            if (onCampaignCreated) {
+                onCampaignCreated();
+            }
         } catch (err) {
             console.error("Creation Error:", err);
             setError(err.reason || err.message || "An error occurred.");
@@ -468,7 +511,7 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
             setLoadingMessage('');
         }
     };
-
+    
     return (
         <div className="bg-slate-800/50 border border-slate-700/50 p-8 rounded-2xl shadow-2xl mb-12 backdrop-blur-lg">
             <h2 className="text-3xl font-bold mb-6 text-center text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">Launch a New Campaign</h2>
@@ -505,9 +548,8 @@ const CreateCampaignForm = ({ onCampaignCreated }) => {
     );
 };
 
-
 const CampaignCard = ({ address, onSelectCampaign }) => {
-    const { provider } = useWeb3();
+    const { provider, axiosInstance } = useWeb3();
     const [campaignData, setCampaignData] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -515,11 +557,13 @@ const CampaignCard = ({ address, onSelectCampaign }) => {
 
     useEffect(() => {
         const fetchCampaignData = async () => {
-            if (!provider || !address) return;
+            if (!provider || !address || !axiosInstance) return;
+            
+            setIsLoading(true);
             try {
                 const contract = new ethers.Contract(address, CROWDFUND_ABI, provider);
                 const metadataURI = await contract.metadataURI();
-                const metadataResponse = await window.axios.get(metadataURI.replace("ipfs://", ipfsGateway));
+                const metadataResponse = await axiosInstance.get(metadataURI.replace("ipfs://", ipfsGateway));
                 const metadata = metadataResponse.data;
 
                 const [goal, totalContributions] = await Promise.all([
@@ -540,7 +584,7 @@ const CampaignCard = ({ address, onSelectCampaign }) => {
             }
         };
         fetchCampaignData();
-    }, [address, provider]);
+    }, [address, provider, axiosInstance]);
 
     const isCompleted = campaignData && parseFloat(campaignData.raised) >= parseFloat(campaignData.goal);
 
@@ -551,13 +595,15 @@ const CampaignCard = ({ address, onSelectCampaign }) => {
     if (!campaignData) return null;
 
     return (
-        <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl shadow-lg hover:shadow-indigo-500/30 hover:-translate-y-2 transition-all duration-300 flex flex-col overflow-hidden group">
-             <img src={campaignData.image} alt={campaignData.title} className="w-full h-56 object-cover group-hover:scale-105 transition-transform duration-300"/>
+        <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl shadow-lg hover:shadow-indigo-500/30 hover:-translate-y-2 transition-all duration-300 flex flex-col group overflow-hidden">
+             <div className="h-56 w-full overflow-hidden">
+                <img src={campaignData.image} alt={campaignData.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"/>
+             </div>
              <div className="p-6 flex flex-col flex-grow">
                 <h3 className="text-2xl font-bold mb-4 truncate">{campaignData.title}</h3>
-
+                
                 <ProgressBar value={parseFloat(campaignData.raised)} max={parseFloat(campaignData.goal)} />
-
+                
                 {isCompleted ? (
                     <div className="text-center mt-3 text-green-400 font-bold">
                         🎉 Goal Reached!
@@ -568,9 +614,9 @@ const CampaignCard = ({ address, onSelectCampaign }) => {
                     </div>
                 )}
 
-                <div className="flex-grow"></div>
-
-                <button
+                <div className="flex-grow"></div> 
+                
+                <button 
                     onClick={() => onSelectCampaign(address)}
                     className="mt-6 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-semibold py-3 px-4 rounded-full w-full transition-all duration-300 shadow-lg hover:shadow-indigo-500/50"
                 >
@@ -580,6 +626,7 @@ const CampaignCard = ({ address, onSelectCampaign }) => {
         </div>
     );
 };
+
 const CampaignList = ({ onSelectCampaign }) => {
     const { factoryContract } = useWeb3();
     const [campaigns, setCampaigns] = useState([]);
@@ -604,10 +651,7 @@ const CampaignList = ({ onSelectCampaign }) => {
 
     return (
         <div>
-            {/* The form to create a campaign remains at the top */}
             <CreateCampaignForm onCampaignCreated={fetchCampaigns} />
-
-            {/* NEW: A dedicated container for the campaign grid */}
             <div className="mt-12 bg-slate-800/50 border border-slate-700/50 p-6 sm:p-8 rounded-2xl shadow-2xl backdrop-blur-lg">
                 <h2 className="text-4xl font-bold mb-8 text-center text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">
                     Explore Campaigns
@@ -619,12 +663,11 @@ const CampaignList = ({ onSelectCampaign }) => {
                         <p className="text-slate-400">No campaigns found. Be the first to create one!</p>
                     </div>
                 ) : (
-                    // The grid layout for the cards
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                         {campaigns.map(address => (
-                            <CampaignCard
-                                key={address}
-                                address={address}
+                            <CampaignCard 
+                                key={address} 
+                                address={address} 
                                 onSelectCampaign={onSelectCampaign}
                             />
                         ))}
@@ -636,7 +679,7 @@ const CampaignList = ({ onSelectCampaign }) => {
 };
 
 const CampaignDetail = ({ address, onBack }) => {
-    const { provider, signer, account } = useWeb3();
+    const { provider, signer, account, axiosInstance } = useWeb3();
     const [details, setDetails] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [contributionAmount, setContributionAmount] = useState('');
@@ -652,8 +695,9 @@ const CampaignDetail = ({ address, onBack }) => {
         setError('');
         try {
             const contract = new ethers.Contract(address, CROWDFUND_ABI, provider);
+
             const metadataURI = await contract.metadataURI();
-            const metadataResponse = await window.axios.get(metadataURI.replace("ipfs://", ipfsGateway));
+            const metadataResponse = await axiosInstance.get(metadataURI.replace("ipfs://", ipfsGateway));
             const metadata = metadataResponse.data;
 
             const [owner, goal, deadline, totalContributions, state] = await Promise.all([
@@ -663,9 +707,9 @@ const CampaignDetail = ({ address, onBack }) => {
                 contract.totalContributions(),
                 contract.state()
             ]);
-
+            
             const deadlineDate = new Date(Number(deadline) * 1000);
-
+            
             setDetails({
                 title: metadata.name,
                 image: metadata.image.replace("ipfs://", ipfsGateway),
@@ -685,12 +729,11 @@ const CampaignDetail = ({ address, onBack }) => {
         }
     };
 
-
     useEffect(() => {
-        if (address && provider) {
+        if (address && provider && axiosInstance) {
             fetchDetails();
         }
-    }, [address, provider, account]);
+    }, [address, provider, account, axiosInstance]);
 
     const handleAction = async (actionFn, successMsg) => {
         setError('');
@@ -703,7 +746,7 @@ const CampaignDetail = ({ address, onBack }) => {
             setSuccess("Transaction sent! Waiting for confirmation...");
             await tx.wait();
             setSuccess(successMsg || "Action completed successfully!");
-            fetchDetails(); // Refresh details
+            fetchDetails(); 
         } catch (err) {
             console.error("Action Error:", err);
             const errorMessage = err.reason || err.data?.message || err.message || "An error occurred during the transaction.";
@@ -712,7 +755,7 @@ const CampaignDetail = ({ address, onBack }) => {
             setIsProcessing(false);
         }
     };
-
+    
     const handleContribute = () => handleAction(
         contract => contract.contribute({ value: ethers.parseEther(contributionAmount) }),
         "Contribution successful! Thank you for your support."
@@ -731,21 +774,19 @@ const CampaignDetail = ({ address, onBack }) => {
 
 
     const renderActionPanel = () => {
-        // Funding is active
         if (details.state === 0 && !details.isExpired) {
             return (
                 <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
                     <h3 className="text-xl font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">Make a Contribution</h3>
                     <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
                         <input type="number" step="0.01" min="0" value={contributionAmount} onChange={(e) => setContributionAmount(e.target.value)} className="w-full flex-grow bg-slate-700/50 text-white p-3 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition" placeholder="Amount in ETH"/>
-                        <button onClick={handleContribute} disabled={isProcessing || !contributionAmount} className="w-full sm:w-auto bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-bold py-3 px-8 rounded-lg transition-all duration-300 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-indigo-500/50 min-w-[150px]">
+                         <button onClick={handleContribute} disabled={isProcessing || !contributionAmount} className="w-full sm:w-auto bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-bold py-3 px-8 rounded-lg transition-all duration-300 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-indigo-500/50 min-w-[150px]">
                             {isProcessing ? <Spinner /> : 'Contribute'}
                         </button>
                     </div>
                 </div>
             );
         }
-        // Funding is over, ready to finalize
         if (details.state === 0 && details.isExpired) {
             return (
                 <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 text-center">
@@ -759,7 +800,6 @@ const CampaignDetail = ({ address, onBack }) => {
                 </div>
             );
         }
-        // Campaign failed, eligible for refund
         if (details.state === 2) {
             return (
                  <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 text-center">
@@ -771,7 +811,6 @@ const CampaignDetail = ({ address, onBack }) => {
                 </div>
             );
         }
-        // Campaign was successful
         if (details.state === 1) {
             return <Message text="🎉 This campaign was a success! Funds have been transferred to the owner." type="success" />;
         }
@@ -789,7 +828,7 @@ const CampaignDetail = ({ address, onBack }) => {
                  <div className="flex flex-col justify-center">
                     <h2 className="text-4xl lg:text-5xl font-bold mb-3 break-words text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">{details.title}</h2>
                      <div className="flex items-center justify-between mb-6">
-                        <span className="font-bold text-slate-400">Status:</span>
+                        <span className="font-bold text-slate-400">Status:</span> 
                         <span className={`px-3 py-1 text-sm font-semibold rounded-full ${details.state === 0 ? 'bg-blue-900/50 text-blue-300 border border-blue-700' : details.state === 1 ? 'bg-green-900/50 text-green-300 border border-green-700' : 'bg-red-900/50 text-red-300 border border-red-700'}`}>
                             {campaignState[details.state]}
                         </span>
@@ -845,7 +884,7 @@ export default function App() {
 
 const MainContent = ({selectedCampaign, setSelectedCampaign}) => {
     const { account, error, connectWallet } = useWeb3();
-
+    
     if (!account) {
         return (
             <div className="text-center mt-20 flex flex-col items-center">
@@ -861,7 +900,7 @@ const MainContent = ({selectedCampaign, setSelectedCampaign}) => {
             </div>
         );
     }
-
+    
     if (selectedCampaign) {
         return (
             <CampaignDetail
@@ -870,6 +909,6 @@ const MainContent = ({selectedCampaign, setSelectedCampaign}) => {
             />
         );
     }
-
+    
     return <CampaignList onSelectCampaign={setSelectedCampaign} />;
 };
